@@ -52,6 +52,10 @@ pub struct DiffOptions {
     /// If a range is provided, behaves like --all mode. If not specified, uses '@-'.
     #[clap(short = 'r', long)]
     revision: Option<String>,
+
+    /// Preview what would happen without pushing or creating PRs
+    #[clap(long)]
+    pub dry_run: bool,
 }
 
 pub async fn diff(
@@ -138,10 +142,48 @@ pub async fn diff(
 
     // This updates the commit message in the local Jujutsu repository (if it was
     // changed by the implementation)
-    add_error(
-        &mut result,
-        jj.rewrite_commit_messages(prepared_commits.as_mut_slice()),
-    );
+    if !opts.dry_run {
+        add_error(
+            &mut result,
+            jj.rewrite_commit_messages(prepared_commits.as_mut_slice()),
+        );
+    }
+
+    if opts.dry_run {
+        let count = prepared_commits
+            .iter()
+            .filter(|c| c.dry_run_action.is_some())
+            .count();
+        output(
+            "\n📋",
+            &format!("Dry run complete. Would process {} commit(s):", count),
+        )?;
+        for pc in &prepared_commits {
+            let title = pc
+                .message
+                .get(&crate::message::MessageSection::Title)
+                .map(|t| &t[..])
+                .unwrap_or("");
+            match &pc.dry_run_action {
+                Some(crate::jj::DryRunAction::Create { base }) => {
+                    output(
+                        "  ",
+                        &format!("{}  CREATE  base={:<20} \"{}\"", pc.short_id, base, title),
+                    )?;
+                }
+                Some(crate::jj::DryRunAction::Update { pr_number }) => {
+                    output(
+                        "  ",
+                        &format!(
+                            "{}  UPDATE  PR #{:<18} \"{}\"",
+                            pc.short_id, pr_number, title
+                        ),
+                    )?;
+                }
+                None => {}
+            }
+        }
+    }
 
     result
 }
@@ -355,10 +397,20 @@ async fn diff_impl(
                 pull_request_updates.update_message(pull_request, message);
 
                 if !pull_request_updates.is_empty() {
-                    // ...and there are actual changes to the message
-                    gh.update_pull_request(pull_request.number, pull_request_updates)
-                        .await?;
-                    output("✍", "Updated commit message on GitHub")?;
+                    if opts.dry_run {
+                        output(
+                            "🔍",
+                            &format!(
+                                "Would update PR #{} title/body",
+                                pull_request.number
+                            ),
+                        )?;
+                    } else {
+                        // ...and there are actual changes to the message
+                        gh.update_pull_request(pull_request.number, pull_request_updates)
+                            .await?;
+                        output("✍", "Updated commit message on GitHub")?;
+                    }
                 }
             }
 
@@ -440,23 +492,29 @@ async fn diff_impl(
             parents.push(master_base_oid);
         }
 
-        let new_base_branch_commit = jj.create_derived_commit(
-            local_commit.parent_oid,
-            &format!(
-                "[spr] {}\n\nCreated using jj-spr {}\n\n[skip ci]",
-                if pull_request.is_some() {
-                    "changes introduced through rebase".to_string()
-                } else {
-                    format!(
-                        "changes to {} this commit is based on",
-                        config.master_ref.branch_name()
-                    )
-                },
-                env!("CARGO_PKG_VERSION"),
-            ),
-            new_base_tree,
-            &parents[..],
-        )?;
+        let new_base_branch_commit = if opts.dry_run {
+            output("🔍", "Would create base branch commit")?;
+            // Use a placeholder OID — this won't be pushed
+            pr_base_oid
+        } else {
+            jj.create_derived_commit(
+                local_commit.parent_oid,
+                &format!(
+                    "[spr] {}\n\nCreated using jj-spr {}\n\n[skip ci]",
+                    if pull_request.is_some() {
+                        "changes introduced through rebase".to_string()
+                    } else {
+                        format!(
+                            "changes to {} this commit is based on",
+                            config.master_ref.branch_name()
+                        )
+                    },
+                    env!("CARGO_PKG_VERSION"),
+                ),
+                new_base_tree,
+                &parents[..],
+            )?
+        };
 
         // If `base_branch` is `None` (which means a base branch does not exist
         // yet), then make a `GitHubBranch` with a new name for a base branch
@@ -470,7 +528,7 @@ async fn diff_impl(
     };
 
     let mut github_commit_message = opts.message.clone();
-    if pull_request.is_some() && github_commit_message.is_none() {
+    if pull_request.is_some() && github_commit_message.is_none() && !opts.dry_run {
         let input = {
             let message_on_prompt = message_on_prompt.clone();
 
@@ -508,144 +566,248 @@ async fn diff_impl(
     }
 
     // Create the new commit
-    let pr_commit = jj.create_derived_commit(
-        local_commit.oid,
-        &format!(
-            "{}\n\nCreated using jj-spr {}",
-            github_commit_message
-                .as_ref()
-                .map(|s| &s[..])
-                .unwrap_or("[jj-spr] initial version"),
-            env!("CARGO_PKG_VERSION"),
-        ),
-        new_head_tree,
-        &pr_commit_parents[..],
-    )?;
+    let pr_commit = if opts.dry_run {
+        output("🔍", "Would create PR branch commit")?;
+        // Use a placeholder OID — this won't be pushed
+        pr_head_oid
+    } else {
+        jj.create_derived_commit(
+            local_commit.oid,
+            &format!(
+                "{}\n\nCreated using jj-spr {}",
+                github_commit_message
+                    .as_ref()
+                    .map(|s| &s[..])
+                    .unwrap_or("[jj-spr] initial version"),
+                env!("CARGO_PKG_VERSION"),
+            ),
+            new_head_tree,
+            &pr_commit_parents[..],
+        )?
+    };
 
-    let mut cmd = tokio::process::Command::new("git");
-    cmd.arg("push")
-        .arg("--atomic")
-        .arg("--no-verify")
-        .arg("--")
-        .arg(&config.remote_name)
-        .arg(format!("{}:{}", pr_commit, pull_request_branch.on_github()));
+    if opts.dry_run {
+        // Dry-run mode: print what would happen without performing side effects
+        let base_branch_name = base_branch
+            .as_ref()
+            .unwrap_or(&config.master_ref)
+            .branch_name();
 
-    if let Some(pull_request) = pull_request {
-        // We are updating an existing Pull Request
-
-        if needs_merging_master {
+        if let Some(ref pull_request) = pull_request {
             output(
-                "⚾",
+                "🔍",
                 &format!(
-                    "Commit was rebased - updating Pull Request #{}",
-                    pull_request.number
+                    "Would push: {}:{} to {}",
+                    pr_commit,
+                    pull_request_branch.on_github(),
+                    &config.remote_name
                 ),
+            )?;
+            if let Some(ref bb) = base_branch
+                && let Some(base_branch_commit) = pr_base_parent
+            {
+                output(
+                    "🔍",
+                    &format!(
+                        "Would push: {}:{} to {}",
+                        base_branch_commit,
+                        bb.on_github(),
+                        &config.remote_name
+                    ),
+                )?;
+            }
+            output(
+                "🔍",
+                &format!("Would update PR #{}", pull_request.number),
             )?;
         } else {
             output(
-                "🔁",
+                "🔍",
                 &format!(
-                    "Commit was changed - updating Pull Request #{}",
-                    pull_request.number
+                    "Would push: {}:{} to {}",
+                    pr_commit,
+                    pull_request_branch.on_github(),
+                    &config.remote_name
                 ),
             )?;
+            if let (Some(bb), Some(base_branch_commit)) = (&base_branch, pr_base_parent) {
+                output(
+                    "🔍",
+                    &format!(
+                        "Would push: {}:{} to {}",
+                        base_branch_commit,
+                        bb.on_github(),
+                        &config.remote_name
+                    ),
+                )?;
+            }
+            output(
+                "🔍",
+                &format!(
+                    "Would create PR: base={}, head={}, draft={}",
+                    base_branch_name,
+                    pull_request_branch.branch_name(),
+                    opts.draft,
+                ),
+            )?;
+
+            if !requested_reviewers.reviewers.is_empty()
+                || !requested_reviewers.team_reviewers.is_empty()
+            {
+                let all_reviewers: Vec<&str> = requested_reviewers
+                    .reviewers
+                    .iter()
+                    .map(|s| s.as_str())
+                    .chain(
+                        requested_reviewers
+                            .team_reviewers
+                            .iter()
+                            .map(|s| s.as_str()),
+                    )
+                    .collect();
+                output(
+                    "🔍",
+                    &format!("Would request reviewers: {}", all_reviewers.join(", ")),
+                )?;
+            }
         }
 
-        // Things we want to update in the Pull Request on GitHub
-        let mut pull_request_updates: PullRequestUpdate = Default::default();
+        // Store dry-run info on the commit for summary output
+        local_commit.dry_run_action = if let Some(ref pr) = pull_request {
+            Some(crate::jj::DryRunAction::Update {
+                pr_number: pr.number,
+            })
+        } else {
+            Some(crate::jj::DryRunAction::Create {
+                base: base_branch_name.to_string(),
+            })
+        };
+    } else {
+        let mut cmd = tokio::process::Command::new("git");
+        cmd.arg("push")
+            .arg("--atomic")
+            .arg("--no-verify")
+            .arg("--")
+            .arg(&config.remote_name)
+            .arg(format!("{}:{}", pr_commit, pull_request_branch.on_github()));
 
-        if opts.update_message {
-            pull_request_updates.update_message(&pull_request, message);
-        }
+        if let Some(pull_request) = pull_request {
+            // We are updating an existing Pull Request
 
-        if let Some(base_branch) = base_branch {
-            // We are using a base branch.
+            if needs_merging_master {
+                output(
+                    "⚾",
+                    &format!(
+                        "Commit was rebased - updating Pull Request #{}",
+                        pull_request.number
+                    ),
+                )?;
+            } else {
+                output(
+                    "🔁",
+                    &format!(
+                        "Commit was changed - updating Pull Request #{}",
+                        pull_request.number
+                    ),
+                )?;
+            }
 
-            if let Some(base_branch_commit) = pr_base_parent {
-                // ...and we prepared a new commit for it, so we need to push an
-                // update of the base branch.
+            // Things we want to update in the Pull Request on GitHub
+            let mut pull_request_updates: PullRequestUpdate = Default::default();
+
+            if opts.update_message {
+                pull_request_updates.update_message(&pull_request, message);
+            }
+
+            if let Some(base_branch) = base_branch {
+                // We are using a base branch.
+
+                if let Some(base_branch_commit) = pr_base_parent {
+                    // ...and we prepared a new commit for it, so we need to push an
+                    // update of the base branch.
+                    cmd.arg(format!(
+                        "{}:{}",
+                        base_branch_commit,
+                        base_branch.on_github()
+                    ));
+                }
+
+                // Push the new commit onto the Pull Request branch (and also the
+                // new base commit, if we added that to cmd above).
+                run_command(&mut cmd)
+                    .await
+                    .reword("git push failed".to_string())?;
+
+                // If the Pull Request's base is not set to the base branch yet,
+                // change that now.
+                if pull_request.base.branch_name() != base_branch.branch_name() {
+                    pull_request_updates.base = Some(base_branch.branch_name().to_string());
+                }
+            } else {
+                // The Pull Request is against the master branch. In that case we
+                // only need to push the update to the Pull Request branch.
+                run_command(&mut cmd)
+                    .await
+                    .reword("git push failed".to_string())?;
+            }
+
+            if !pull_request_updates.is_empty() {
+                gh.update_pull_request(pull_request.number, pull_request_updates)
+                    .await?;
+            }
+        } else {
+            // We are creating a new Pull Request.
+
+            // If there's a base branch, add it to the push
+            if let (Some(base_branch), Some(base_branch_commit)) = (&base_branch, pr_base_parent) {
                 cmd.arg(format!(
                     "{}:{}",
                     base_branch_commit,
                     base_branch.on_github()
                 ));
             }
-
-            // Push the new commit onto the Pull Request branch (and also the
-            // new base commit, if we added that to cmd above).
+            // Push the pull request branch and the base branch if present
             run_command(&mut cmd)
                 .await
                 .reword("git push failed".to_string())?;
 
-            // If the Pull Request's base is not set to the base branch yet,
-            // change that now.
-            if pull_request.base.branch_name() != base_branch.branch_name() {
-                pull_request_updates.base = Some(base_branch.branch_name().to_string());
-            }
-        } else {
-            // The Pull Request is against the master branch. In that case we
-            // only need to push the update to the Pull Request branch.
-            run_command(&mut cmd)
-                .await
-                .reword("git push failed".to_string())?;
-        }
-
-        if !pull_request_updates.is_empty() {
-            gh.update_pull_request(pull_request.number, pull_request_updates)
+            // Then call GitHub to create the Pull Request.
+            let pull_request_number = gh
+                .create_pull_request(
+                    message,
+                    base_branch
+                        .as_ref()
+                        .unwrap_or(&config.master_ref)
+                        .branch_name()
+                        .to_string(),
+                    pull_request_branch.branch_name().to_string(),
+                    opts.draft,
+                )
                 .await?;
-        }
-    } else {
-        // We are creating a new Pull Request.
 
-        // If there's a base branch, add it to the push
-        if let (Some(base_branch), Some(base_branch_commit)) = (&base_branch, pr_base_parent) {
-            cmd.arg(format!(
-                "{}:{}",
-                base_branch_commit,
-                base_branch.on_github()
-            ));
-        }
-        // Push the pull request branch and the base branch if present
-        run_command(&mut cmd)
-            .await
-            .reword("git push failed".to_string())?;
+            let pull_request_url = config.pull_request_url(pull_request_number);
 
-        // Then call GitHub to create the Pull Request.
-        let pull_request_number = gh
-            .create_pull_request(
-                message,
-                base_branch
-                    .as_ref()
-                    .unwrap_or(&config.master_ref)
-                    .branch_name()
-                    .to_string(),
-                pull_request_branch.branch_name().to_string(),
-                opts.draft,
-            )
-            .await?;
+            output(
+                "✨",
+                &format!(
+                    "Created new Pull Request #{}: {}",
+                    pull_request_number, &pull_request_url,
+                ),
+            )?;
 
-        let pull_request_url = config.pull_request_url(pull_request_number);
+            message.insert(MessageSection::PullRequest, pull_request_url);
+            local_commit.message_changed = true;
 
-        output(
-            "✨",
-            &format!(
-                "Created new Pull Request #{}: {}",
-                pull_request_number, &pull_request_url,
-            ),
-        )?;
-
-        message.insert(MessageSection::PullRequest, pull_request_url);
-        local_commit.message_changed = true;
-
-        let result = gh
-            .request_reviewers(pull_request_number, requested_reviewers)
-            .await;
-        match result {
-            Ok(()) => (),
-            Err(error) => {
-                output("⚠️", "Requesting reviewers failed")?;
-                for message in error.messages() {
-                    output("  ", message)?;
+            let result = gh
+                .request_reviewers(pull_request_number, requested_reviewers)
+                .await;
+            match result {
+                Ok(()) => (),
+                Err(error) => {
+                    output("⚠️", "Requesting reviewers failed")?;
+                    for message in error.messages() {
+                        output("  ", message)?;
+                    }
                 }
             }
         }
@@ -747,6 +909,7 @@ mod tests {
             cherry_pick: false,
             base: None,
             revision: None,
+            dry_run: false,
         };
 
         assert!(!opts.all);
@@ -767,6 +930,7 @@ mod tests {
             cherry_pick: false,
             base: Some("main".to_string()),
             revision: None,
+            dry_run: false,
         };
 
         assert_eq!(opts.base, Some("main".to_string()));
@@ -792,6 +956,7 @@ mod tests {
             cherry_pick: false,
             base: Some("main".to_string()),
             revision: None,
+            dry_run: false,
         };
 
         assert_eq!(opts_with_base.base.as_deref(), Some("main"));
@@ -805,6 +970,7 @@ mod tests {
             cherry_pick: false,
             base: Some("trunk()".to_string()),
             revision: None,
+            dry_run: false,
         };
 
         assert_eq!(opts_with_trunk.base.as_deref(), Some("trunk()"));
@@ -820,6 +986,7 @@ mod tests {
             cherry_pick: false,
             base: Some("trunk()".to_string()),
             revision: None,
+            dry_run: false,
         };
 
         // When --all is specified, it should work with base revisions
@@ -838,6 +1005,7 @@ mod tests {
             cherry_pick: false,
             base: Some("trunk()".to_string()),
             revision: None,
+            dry_run: false,
         };
 
         assert!(opts.all);
@@ -846,6 +1014,23 @@ mod tests {
         assert_eq!(opts.message.as_deref(), Some("Update message"));
         assert!(!opts.cherry_pick);
         assert_eq!(opts.base.as_deref(), Some("trunk()"));
+    }
+
+    #[test]
+    fn test_diff_options_dry_run_flag() {
+        let opts = DiffOptions {
+            all: false,
+            update_message: false,
+            draft: false,
+            message: None,
+            cherry_pick: false,
+            base: None,
+            revision: None,
+            dry_run: true,
+        };
+
+        assert!(opts.dry_run);
+        assert!(!opts.all);
     }
 
     // Integration tests would require more complex setup with actual Git repositories
