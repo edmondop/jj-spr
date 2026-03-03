@@ -20,8 +20,19 @@ use git2::Oid;
 
 #[derive(Debug, Clone)]
 pub enum DryRunAction {
-    Create { base: String },
-    Update { pr_number: u64 },
+    Create {
+        base: String,
+        head: String,
+        is_stacked: bool,
+        draft: bool,
+        reviewers: Vec<String>,
+    },
+    Update {
+        pr_number: u64,
+        base: String,
+        head: String,
+        is_stacked: bool,
+    },
 }
 
 #[derive(Debug)]

@@ -121,7 +121,9 @@ pub async fn diff(
             None
         };
 
-        write_commit_title(prepared_commit)?;
+        if !opts.dry_run {
+            write_commit_title(prepared_commit)?;
+        }
 
         // The further implementation of the diff command is in a separate function.
         // This makes it easier to run the code to update the local commit message
@@ -150,38 +152,65 @@ pub async fn diff(
     }
 
     if opts.dry_run {
-        let count = prepared_commits
+        let actions: Vec<_> = prepared_commits
             .iter()
-            .filter(|c| c.dry_run_action.is_some())
-            .count();
+            .enumerate()
+            .filter(|(_, c)| c.dry_run_action.is_some())
+            .collect();
+
         output(
             "\n📋",
-            &format!("Dry run complete. Would process {} commit(s):", count),
+            &format!("Dry run complete. Would process {} change(s):\n", actions.len()),
         )?;
-        for pc in &prepared_commits {
+
+        for (idx, pc) in &actions {
             let title = pc
                 .message
                 .get(&crate::message::MessageSection::Title)
                 .map(|t| &t[..])
                 .unwrap_or("");
-            match &pc.dry_run_action {
-                Some(crate::jj::DryRunAction::Create { base }) => {
-                    output(
-                        "  ",
-                        &format!("{}  CREATE  base={:<20} \"{}\"", pc.short_id, base, title),
-                    )?;
+            let pos = idx + 1;
+
+            let (action_label, base, head, reviewers_list) = match &pc.dry_run_action {
+                Some(crate::jj::DryRunAction::Create {
+                    base,
+                    head,
+                    draft,
+                    reviewers,
+                    ..
+                }) => {
+                    let label = if *draft {
+                        "CREATE (draft)".to_string()
+                    } else {
+                        "CREATE".to_string()
+                    };
+                    (label, base.as_str(), head.as_str(), reviewers.clone())
                 }
-                Some(crate::jj::DryRunAction::Update { pr_number }) => {
-                    output(
-                        "  ",
-                        &format!(
-                            "{}  UPDATE  PR #{:<18} \"{}\"",
-                            pc.short_id, pr_number, title
-                        ),
-                    )?;
+                Some(crate::jj::DryRunAction::Update {
+                    pr_number,
+                    base,
+                    head,
+                    ..
+                }) => {
+                    let label = format!("UPDATE PR #{pr_number}");
+                    (label, base.as_str(), head.as_str(), vec![])
                 }
-                None => {}
+                None => continue,
+            };
+
+            output(
+                &format!("  #{pos}"),
+                &format!("{action_label}  {}  \"{title}\"", pc.short_id),
+            )?;
+            output("     ", &format!("head: {head}"))?;
+            output("     ", &format!("base: {base}"))?;
+            if !reviewers_list.is_empty() {
+                output(
+                    "     ",
+                    &format!("reviewers: {}", reviewers_list.join(", ")),
+                )?;
             }
+            output("", "")?;
         }
     }
 
@@ -399,7 +428,7 @@ async fn diff_impl(
                 if !pull_request_updates.is_empty() {
                     if opts.dry_run {
                         output(
-                            "🔍",
+                            "  ",
                             &format!(
                                 "Would update PR #{} title/body",
                                 pull_request.number
@@ -493,7 +522,6 @@ async fn diff_impl(
         }
 
         let new_base_branch_commit = if opts.dry_run {
-            output("🔍", "Would create base branch commit")?;
             // Use a placeholder OID — this won't be pushed
             pr_base_oid
         } else {
@@ -567,7 +595,6 @@ async fn diff_impl(
 
     // Create the new commit
     let pr_commit = if opts.dry_run {
-        output("🔍", "Would create PR branch commit")?;
         // Use a placeholder OID — this won't be pushed
         pr_head_oid
     } else {
@@ -587,99 +614,33 @@ async fn diff_impl(
     };
 
     if opts.dry_run {
-        // Dry-run mode: print what would happen without performing side effects
-        let base_branch_name = base_branch
+        let base_ref = base_branch
             .as_ref()
-            .unwrap_or(&config.master_ref)
-            .branch_name();
+            .unwrap_or(&config.master_ref);
+        let base_branch_name = base_ref.branch_name();
+        let head_branch_name = pull_request_branch.branch_name();
+        let is_stacked = !base_ref.is_master_branch();
 
-        if let Some(ref pull_request) = pull_request {
-            output(
-                "🔍",
-                &format!(
-                    "Would push: {}:{} to {}",
-                    pr_commit,
-                    pull_request_branch.on_github(),
-                    &config.remote_name
-                ),
-            )?;
-            if let Some(ref bb) = base_branch
-                && let Some(base_branch_commit) = pr_base_parent
-            {
-                output(
-                    "🔍",
-                    &format!(
-                        "Would push: {}:{} to {}",
-                        base_branch_commit,
-                        bb.on_github(),
-                        &config.remote_name
-                    ),
-                )?;
-            }
-            output(
-                "🔍",
-                &format!("Would update PR #{}", pull_request.number),
-            )?;
-        } else {
-            output(
-                "🔍",
-                &format!(
-                    "Would push: {}:{} to {}",
-                    pr_commit,
-                    pull_request_branch.on_github(),
-                    &config.remote_name
-                ),
-            )?;
-            if let (Some(bb), Some(base_branch_commit)) = (&base_branch, pr_base_parent) {
-                output(
-                    "🔍",
-                    &format!(
-                        "Would push: {}:{} to {}",
-                        base_branch_commit,
-                        bb.on_github(),
-                        &config.remote_name
-                    ),
-                )?;
-            }
-            output(
-                "🔍",
-                &format!(
-                    "Would create PR: base={}, head={}, draft={}",
-                    base_branch_name,
-                    pull_request_branch.branch_name(),
-                    opts.draft,
-                ),
-            )?;
-
-            if !requested_reviewers.reviewers.is_empty()
-                || !requested_reviewers.team_reviewers.is_empty()
-            {
-                let all_reviewers: Vec<&str> = requested_reviewers
-                    .reviewers
-                    .iter()
-                    .map(|s| s.as_str())
-                    .chain(
-                        requested_reviewers
-                            .team_reviewers
-                            .iter()
-                            .map(|s| s.as_str()),
-                    )
-                    .collect();
-                output(
-                    "🔍",
-                    &format!("Would request reviewers: {}", all_reviewers.join(", ")),
-                )?;
-            }
-        }
-
-        // Store dry-run info on the commit for summary output
         local_commit.dry_run_action = if let Some(ref pr) = pull_request {
             Some(crate::jj::DryRunAction::Update {
                 pr_number: pr.number,
+                base: base_branch_name.to_string(),
+                head: head_branch_name.to_string(),
+                is_stacked,
             })
         } else {
+            let all_reviewers: Vec<String> = requested_reviewers
+                .reviewers
+                .iter()
+                .chain(requested_reviewers.team_reviewers.iter())
+                .cloned()
+                .collect();
             Some(crate::jj::DryRunAction::Create {
                 base: base_branch_name.to_string(),
+                head: head_branch_name.to_string(),
+                is_stacked,
+                draft: opts.draft,
+                reviewers: all_reviewers,
             })
         };
     } else {
