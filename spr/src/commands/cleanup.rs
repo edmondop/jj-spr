@@ -8,10 +8,7 @@
 use std::collections::HashSet;
 use std::process::Stdio;
 
-use crate::{
-    error::Result,
-    output::output,
-};
+use crate::{error::Result, output::output};
 
 #[derive(Debug, clap::Parser)]
 pub struct CleanupOptions {
@@ -96,10 +93,7 @@ pub async fn cleanup(
     }
 
     if !opts.confirm {
-        output(
-            "💡",
-            "Run with --confirm to delete these branches.",
-        )?;
+        output("💡", "Run with --confirm to delete these branches.")?;
         return Ok(());
     }
 
@@ -123,7 +117,10 @@ pub async fn cleanup(
                 output("✅", &format!("Deleted {}", branch))?;
             }
             _ => {
-                output("⚠️", &format!("Failed to delete {} (may already be gone)", branch))?;
+                output(
+                    "⚠️",
+                    &format!("Failed to delete {} (may already be gone)", branch),
+                )?;
             }
         }
     }
@@ -160,13 +157,10 @@ mod tests {
 
     #[test]
     fn test_extract_spr_branch_names_empty_when_no_match() {
-        let refs: HashSet<String> = [
-            "refs/remotes/origin/main",
-            "refs/remotes/origin/feature",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+        let refs: HashSet<String> = ["refs/remotes/origin/main", "refs/remotes/origin/feature"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
 
         let branches = extract_spr_branch_names(&refs, "origin", "spr/user/");
         assert!(branches.is_empty());
@@ -195,13 +189,10 @@ mod tests {
             "spr/user/feat-c".into(),
         ];
 
-        let open_pr_branches: HashSet<String> = [
-            "spr/user/feat-a",
-            "spr/user/main.feat-a",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+        let open_pr_branches: HashSet<String> = ["spr/user/feat-a", "spr/user/main.feat-a"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
 
         let mut orphans: Vec<&str> = find_orphan_branches(&spr_branches, &open_pr_branches)
             .into_iter()
@@ -214,18 +205,13 @@ mod tests {
 
     #[test]
     fn test_find_orphan_branches_none_when_all_active() {
-        let spr_branches: Vec<String> = vec![
-            "spr/user/feat-a".into(),
-            "spr/user/main.feat-a".into(),
-        ];
+        let spr_branches: Vec<String> =
+            vec!["spr/user/feat-a".into(), "spr/user/main.feat-a".into()];
 
-        let open_pr_branches: HashSet<String> = [
-            "spr/user/feat-a",
-            "spr/user/main.feat-a",
-        ]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+        let open_pr_branches: HashSet<String> = ["spr/user/feat-a", "spr/user/main.feat-a"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
 
         let orphans = find_orphan_branches(&spr_branches, &open_pr_branches);
         assert!(orphans.is_empty());
@@ -233,10 +219,7 @@ mod tests {
 
     #[test]
     fn test_find_orphan_branches_all_orphans_when_no_open_prs() {
-        let spr_branches: Vec<String> = vec![
-            "spr/user/feat-a".into(),
-            "spr/user/feat-b".into(),
-        ];
+        let spr_branches: Vec<String> = vec!["spr/user/feat-a".into(), "spr/user/feat-b".into()];
 
         let open_pr_branches: HashSet<String> = HashSet::new();
 

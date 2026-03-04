@@ -484,9 +484,7 @@ impl GitHub {
                 res.json().await?;
 
             if let Some(errors) = response_body.errors {
-                let error = Err(Error::new(
-                    "fetching open PR branches failed".to_string(),
-                ));
+                let error = Err(Error::new("fetching open PR branches failed".to_string()));
                 return errors
                     .into_iter()
                     .fold(error, |err, e| err.context(e.to_string()));
