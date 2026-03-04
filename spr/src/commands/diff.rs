@@ -160,7 +160,10 @@ pub async fn diff(
 
         output(
             "\n📋",
-            &format!("Dry run complete. Would process {} change(s):\n", actions.len()),
+            &format!(
+                "Dry run complete. Would process {} change(s):\n",
+                actions.len()
+            ),
         )?;
 
         for (idx, pc) in &actions {
@@ -429,10 +432,7 @@ async fn diff_impl(
                     if opts.dry_run {
                         output(
                             "  ",
-                            &format!(
-                                "Would update PR #{} title/body",
-                                pull_request.number
-                            ),
+                            &format!("Would update PR #{} title/body", pull_request.number),
                         )?;
                     } else {
                         // ...and there are actual changes to the message
@@ -614,9 +614,7 @@ async fn diff_impl(
     };
 
     if opts.dry_run {
-        let base_ref = base_branch
-            .as_ref()
-            .unwrap_or(&config.master_ref);
+        let base_ref = base_branch.as_ref().unwrap_or(&config.master_ref);
         let base_branch_name = base_ref.branch_name();
         let head_branch_name = pull_request_branch.branch_name();
         let is_stacked = !base_ref.is_master_branch();
