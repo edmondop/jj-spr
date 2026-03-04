@@ -211,10 +211,7 @@ mod tests {
             source: InnerError("PR is not mergeable".into()),
         };
         let error: Error = outer.into();
-        assert_eq!(
-            error.messages()[0],
-            "GitHub: PR is not mergeable"
-        );
+        assert_eq!(error.messages()[0], "GitHub: PR is not mergeable");
     }
 
     #[test]
