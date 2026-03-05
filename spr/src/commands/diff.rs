@@ -6,7 +6,6 @@
  */
 
 use std::iter::zip;
-use std::process::Stdio;
 
 use crate::{
     error::{Error, Result, ResultExt, add_error},
@@ -227,7 +226,7 @@ pub async fn diff(
 /// - `base_branch`: `Some` if the PR should keep (or gain) a synthetic base,
 ///   `None` if the PR should target master.
 /// - `old_synthetic_base`: `Some` if the PR currently has a synthetic base that
-///   may need cleanup (retarget + delete).
+///   needs retargeting to master.
 fn determine_base_branch(
     pull_request: Option<&PullRequest>,
     directly_based_on_master: bool,
@@ -743,9 +742,8 @@ async fn diff_impl(
                     .await
                     .reword("git push failed".to_string())?;
 
-                // If the PR previously had a synthetic base, retarget to master
-                // and clean up the old synthetic base branch.
-                if let Some(ref old_base) = old_synthetic_base {
+                // If the PR previously had a synthetic base, retarget to master.
+                if old_synthetic_base.is_some() {
                     pull_request_updates.base = Some(config.master_ref.branch_name().to_string());
 
                     output(
@@ -756,19 +754,6 @@ async fn diff_impl(
                             config.master_ref.branch_name()
                         ),
                     )?;
-
-                    // Delete the old synthetic base branch (best-effort)
-                    let _ = tokio::process::Command::new("git")
-                        .arg("push")
-                        .arg("--no-verify")
-                        .arg("--delete")
-                        .arg("--")
-                        .arg(&config.remote_name)
-                        .arg(old_base.on_github())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .output()
-                        .await;
                 }
             }
 
