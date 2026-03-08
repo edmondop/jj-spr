@@ -764,6 +764,26 @@ async fn diff_impl(
         } else {
             // We are creating a new Pull Request.
 
+            // Confirm with the user before creating a new PR.
+            // This guards against accidental PR creation when the
+            // `Pull Request:` URL was stripped from the commit message
+            // (e.g. by an AI assistant rewriting the description).
+            let confirm_title = title.to_string();
+            let confirm = tokio::task::spawn_blocking(move || {
+                dialoguer::Confirm::new()
+                    .with_prompt(format!(
+                        "Create a new Pull Request for \"{}\"?",
+                        confirm_title
+                    ))
+                    .default(true)
+                    .interact()
+            })
+            .await??;
+
+            if !confirm {
+                return Err(Error::new("Aborted as per user request".to_string()));
+            }
+
             // If there's a base branch, add it to the push
             if let (Some(base_branch), Some(base_branch_commit)) = (&base_branch, pr_base_parent) {
                 cmd.arg(format!(
