@@ -192,6 +192,7 @@ impl GitHub {
 
         // Fetch refs from remote using git (since we're in a colocated repo)
         let _fetch_result = tokio::process::Command::new("git")
+            .current_dir(&config.git_workdir)
             .args([
                 "fetch",
                 "--no-write-fetch-head",
