@@ -857,6 +857,7 @@ mod tests {
             "main".into(),
             "spr/test/".into(),
             false,
+            std::env::temp_dir(),
         )
     }
 

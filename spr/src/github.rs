@@ -204,6 +204,7 @@ impl GitHub {
 
         // Convert branch refs to OIDs
         let base_oid = if let Ok(output) = tokio::process::Command::new("git")
+            .current_dir(&config.git_workdir)
             .args(["rev-parse", base.local()])
             .output()
             .await
@@ -219,6 +220,7 @@ impl GitHub {
         };
 
         let head_oid = if let Ok(output) = tokio::process::Command::new("git")
+            .current_dir(&config.git_workdir)
             .args(["rev-parse", head.local()])
             .output()
             .await

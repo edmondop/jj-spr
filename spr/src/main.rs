@@ -102,6 +102,10 @@ pub async fn spr() -> Result<()> {
         ));
     }
 
+    let git_workdir = repo
+        .workdir()
+        .ok_or_else(|| Error::new("Repository must have a working directory".to_string()))?
+        .to_path_buf();
     let git_config = repo.config()?;
 
     // Try jj config first, fall back to git config
@@ -149,6 +153,7 @@ pub async fn spr() -> Result<()> {
         github_master_branch,
         branch_prefix,
         require_approval,
+        git_workdir,
     );
 
     let jj = jj_spr::jj::Jujutsu::new_with_workspace(repo, current_dir)
