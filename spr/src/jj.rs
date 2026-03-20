@@ -170,6 +170,12 @@ impl Jujutsu {
         })
     }
 
+    pub fn git_workdir(&self) -> &Path {
+        self.git_repo
+            .workdir()
+            .expect("git repo must have a working directory")
+    }
+
     pub fn get_prepared_commit_for_revision(
         &self,
         config: &Config,

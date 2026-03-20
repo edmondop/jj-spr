@@ -675,7 +675,8 @@ async fn diff_impl(
         };
     } else {
         let mut cmd = tokio::process::Command::new("git");
-        cmd.arg("push")
+        cmd.current_dir(jj.git_workdir())
+            .arg("push")
             .arg("--atomic")
             .arg("--no-verify")
             .arg("--")

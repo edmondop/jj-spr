@@ -101,6 +101,7 @@ pub async fn cleanup(
 
     for branch in &orphan_branches {
         let result = tokio::process::Command::new("git")
+            .current_dir(jj.git_workdir())
             .arg("push")
             .arg("--no-verify")
             .arg("--delete")
