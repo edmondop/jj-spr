@@ -184,6 +184,47 @@ fn test_spr_commands_work_from_secondary_workspace() {
     );
 }
 
+// Secondary workspace in a separate directory tree — no .git anywhere up the tree
+#[test]
+fn test_spr_commands_work_from_isolated_secondary_workspace() {
+    let (_temp_dir, main_repo_path) = create_jj_repo();
+
+    set_config_for_test(&main_repo_path, "spr.githubRepository", "owner/repo");
+    set_config_for_test(&main_repo_path, "spr.branchPrefix", "spr/test/");
+
+    let sibling_dir = tempdir().expect("Failed to create sibling temp dir");
+    let workspace2_path = sibling_dir.path().join("isolated-ws");
+    let workspace_output = Command::new("jj")
+        .args(["workspace", "add", workspace2_path.to_str().unwrap()])
+        .current_dir(&main_repo_path)
+        .output()
+        .expect("Failed to create workspace");
+    assert!(
+        workspace_output.status.success(),
+        "Failed to create workspace: {}",
+        String::from_utf8_lossy(&workspace_output.stderr)
+    );
+
+    let spr_output = Command::new(env!("CARGO_BIN_EXE_jj-spr"))
+        .args(["list"])
+        .current_dir(&workspace2_path)
+        .output()
+        .expect("Failed to run spr list from isolated workspace");
+
+    let stderr = String::from_utf8_lossy(&spr_output.stderr);
+    let stdout = String::from_utf8_lossy(&spr_output.stdout);
+
+    assert!(
+        !stderr.contains("Could not find a Git repository")
+            && !stderr.contains("could not find a .jj directory")
+            && !stderr.contains("spr.githubRepository must be configured")
+            && !stderr.contains("spr.branchPrefix must be configured"),
+        "spr should work from isolated secondary workspace. stderr: {}, stdout: {}",
+        stderr,
+        stdout
+    );
+}
+
 #[test]
 fn test_config_set_in_workspace_is_shared() {
     let (temp_dir, main_repo_path) = create_jj_repo();
