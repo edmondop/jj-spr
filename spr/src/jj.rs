@@ -149,18 +149,22 @@ impl Jujutsu {
     }
 
     pub fn new_with_workspace(git_repo: git2::Repository, workspace_path: PathBuf) -> Result<Self> {
-        let jj_dir = workspace_path.join(".jj");
-        if !jj_dir.exists() {
-            return Err(Error::new(
+        let jj_dir = find_jj_dir(&workspace_path).map_err(|_| {
+            Error::new(
                 "This is not a Jujutsu repository. Run 'jj git init --colocate' to create one."
                     .to_string(),
-            ));
-        }
+            )
+        })?;
+        // repo_path is the workspace root (parent of .jj), not necessarily the CWD
+        let repo_path = jj_dir
+            .parent()
+            .ok_or_else(|| Error::new(format!(".jj path {} has no parent", jj_dir.display())))?
+            .to_path_buf();
 
         let jj_bin = get_jj_bin();
 
         Ok(Self {
-            repo_path: workspace_path,
+            repo_path,
             jj_bin,
             git_repo,
         })
@@ -708,5 +712,20 @@ mod tests {
             derived_committer_time.seconds() > original_committer_time.seconds(),
             "Derived commit committer timestamp should be newer than original"
         );
+    }
+
+    #[test]
+    fn test_new_with_workspace_from_subdirectory() -> Result<()> {
+        let (_temp_dir, repo_path) = create_jujutsu_test_repo();
+        create_jujutsu_commit(&repo_path, "Initial commit", "hello");
+
+        let subdir = repo_path.join("deep").join("nested").join("dir");
+        fs::create_dir_all(&subdir).map_err(|e| Error::new(e.to_string()))?;
+
+        let git_repo =
+            git2::Repository::discover(&subdir).map_err(|e| Error::new(e.to_string()))?;
+        let jj = Jujutsu::new_with_workspace(git_repo, subdir)?;
+        assert!(jj.repo_path.join(".jj").exists());
+        Ok(())
     }
 }
