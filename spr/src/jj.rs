@@ -47,13 +47,30 @@ pub struct PreparedCommit {
     pub dry_run_action: Option<DryRunAction>,
 }
 
-/// Discover a git repository from a jj workspace path. Falls back to resolving
-/// through `.jj/repo` → `store/git_target` when there's no `.git` (secondary workspaces).
+/// Discover a git repository from a jj workspace path.
+///
+/// When a `.jj` directory exists, we resolve the git repo through jj's
+/// `store/git_target` pointer. This is critical for secondary workspaces
+/// where `git2::Repository::discover` would walk up the directory tree and
+/// potentially find a stray `.git` in a parent directory instead of the
+/// correct colocated git repo.
+///
+/// Falls back to `git2::Repository::discover` for pure-git repos (no `.jj`).
 pub fn discover_git_repo(workspace_path: &Path) -> Result<git2::Repository> {
-    if let Ok(repo) = git2::Repository::discover(workspace_path) {
+    // Prefer jj discovery when a .jj dir exists — git2::discover can find
+    // the wrong repo if a stray .git exists in a parent directory.
+    if let Ok(repo) = discover_git_repo_via_jj(workspace_path) {
         return Ok(repo);
     }
 
+    // Fall back to git2 discover for pure-git repos
+    git2::Repository::discover(workspace_path)
+        .map_err(|e| Error::new(format!("failed to discover git repository: {}", e)))
+}
+
+/// Resolve the git repository by following jj's internal pointers:
+/// `.jj/repo` → `store/git_target`.
+fn discover_git_repo_via_jj(workspace_path: &Path) -> Result<git2::Repository> {
     let jj_dir = find_jj_dir(workspace_path)?;
     let repo_pointer = jj_dir.join("repo");
     let store_path = if repo_pointer.is_file() {
