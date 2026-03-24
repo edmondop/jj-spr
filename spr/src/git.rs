@@ -1353,6 +1353,50 @@ mod tests {
         }
 
         #[test]
+        fn test_discover_git_repo_ignores_stray_parent_git_in_secondary_workspace() {
+            let (_temp_dir, main_repo_path) = create_jujutsu_test_repo();
+            create_jujutsu_commit(&main_repo_path, "Initial commit", "hello");
+
+            // Create a parent directory with a stray .git that is NOT the jj repo's git.
+            // This simulates: /tmp/parent/.git (stray) and /tmp/parent/secondary/.jj (workspace).
+            let stray_parent = TempDir::new().expect("Failed to create stray parent dir");
+            git2::Repository::init(stray_parent.path())
+                .expect("Failed to init stray git repo in parent");
+
+            let workspace2_path = stray_parent.path().join("secondary");
+            let output = Command::new("jj")
+                .args(["workspace", "add", workspace2_path.to_str().unwrap()])
+                .current_dir(&main_repo_path)
+                .output()
+                .expect("Failed to create secondary workspace");
+            assert!(
+                output.status.success(),
+                "Failed to create workspace: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+
+            // git2::Repository::discover from workspace2_path would walk up and
+            // find stray_parent/.git. discover_git_repo must prefer the jj path.
+            let git_repo = discover_git_repo(&workspace2_path)
+                .expect("Failed to discover git repo from secondary workspace");
+
+            // The discovered repo must be the main jj repo, not the stray parent.
+            let expected_gitdir = main_repo_path.join(".git");
+            let actual_gitdir = git_repo.path().to_path_buf();
+            // Canonicalize both to compare
+            let expected = expected_gitdir
+                .canonicalize()
+                .expect("Failed to canonicalize expected");
+            let actual = actual_gitdir
+                .canonicalize()
+                .expect("Failed to canonicalize actual");
+            assert_eq!(
+                expected, actual,
+                "discover_git_repo found the stray parent .git instead of the jj repo's .git"
+            );
+        }
+
+        #[test]
         fn test_jujutsu_detection_from_secondary_workspace() {
             let (_temp_dir, main_repo_path) = create_jujutsu_test_repo();
             create_jujutsu_commit(&main_repo_path, "Initial commit", "hello");
