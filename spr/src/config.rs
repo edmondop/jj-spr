@@ -80,6 +80,14 @@ impl Config {
         self.find_unused_branch_name(existing_ref_names, &slugify(title))
     }
 
+    pub fn get_branch_name_from_bookmark(
+        &self,
+        existing_ref_names: &HashSet<String>,
+        bookmark: &str,
+    ) -> String {
+        self.find_unused_branch_name(existing_ref_names, bookmark)
+    }
+
     pub fn get_base_branch_name(
         &self,
         existing_ref_names: &HashSet<String>,

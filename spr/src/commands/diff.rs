@@ -12,7 +12,7 @@ use crate::{
     github::{
         GitHub, PullRequest, PullRequestRequestReviewers, PullRequestState, PullRequestUpdate,
     },
-    message::{MessageSection, validate_commit_message},
+    message::{MessageSection, build_github_commit_message, validate_commit_message},
     output::{output, write_commit_title},
     utils::{parse_name_list, remove_all_parens, run_command},
 };
@@ -56,6 +56,11 @@ pub struct DiffOptions {
     /// Preview what would happen without pushing or creating PRs
     #[clap(long)]
     pub dry_run: bool,
+
+    /// Explicit branch name for the PR (overrides bookmark detection and
+    /// title-based slugification)
+    #[clap(long)]
+    branch: Option<String>,
 }
 
 pub async fn diff(
@@ -108,8 +113,7 @@ pub async fn diff(
 
     let mut message_on_prompt = "".to_string();
 
-    for (prepared_commit, pull_request_task) in
-        zip(prepared_commits.iter_mut(), pull_request_tasks.into_iter())
+    for (prepared_commit, pull_request_task) in zip(prepared_commits.iter_mut(), pull_request_tasks)
     {
         if result.is_err() {
             break;
@@ -410,7 +414,28 @@ async fn diff_impl(
     let pull_request_branch = match &pull_request {
         Some(pr) => pr.head.clone(),
         None => {
-            config.new_github_branch(&config.get_new_branch_name(&jj.get_all_ref_names()?, title))
+            let branch_name = if let Some(ref explicit) = opts.branch {
+                // Explicit --branch flag takes priority
+                explicit.clone()
+            } else {
+                // Try to use a jj bookmark on this change
+                let bookmarks = jj.get_bookmarks_for_change(local_commit.oid)?;
+                match bookmarks.len() {
+                    0 => config.get_new_branch_name(&jj.get_all_ref_names()?, title),
+                    1 => {
+                        let ref_names = jj.get_all_ref_names()?;
+                        config.get_branch_name_from_bookmark(&ref_names, &bookmarks[0])
+                    }
+                    _ => {
+                        return Err(Error::new(format!(
+                            "Change has multiple bookmarks: {}. \
+                             Use --branch to specify which one to use.",
+                            bookmarks.join(", ")
+                        )));
+                    }
+                }
+            };
+            config.new_github_branch(&branch_name)
         }
     };
 
@@ -630,14 +655,15 @@ async fn diff_impl(
         // Use a placeholder OID — this won't be pushed
         pr_head_oid
     } else {
+        let commit_msg = match github_commit_message.as_ref() {
+            Some(msg) => msg.clone(),
+            None => build_github_commit_message(message).trim_end().to_string(),
+        };
         jj.create_derived_commit(
             local_commit.oid,
             &format!(
                 "{}\n\nCreated using jj-spr {}",
-                github_commit_message
-                    .as_ref()
-                    .map(|s| &s[..])
-                    .unwrap_or_else(|| title),
+                commit_msg,
                 env!("CARGO_PKG_VERSION"),
             ),
             new_head_tree,
@@ -938,6 +964,8 @@ mod tests {
             base: None,
             revision: None,
             dry_run: false,
+
+            branch: None,
         };
 
         assert!(!opts.all);
@@ -959,6 +987,8 @@ mod tests {
             base: Some("main".to_string()),
             revision: None,
             dry_run: false,
+
+            branch: None,
         };
 
         assert_eq!(opts.base, Some("main".to_string()));
@@ -985,6 +1015,8 @@ mod tests {
             base: Some("main".to_string()),
             revision: None,
             dry_run: false,
+
+            branch: None,
         };
 
         assert_eq!(opts_with_base.base.as_deref(), Some("main"));
@@ -999,6 +1031,8 @@ mod tests {
             base: Some("trunk()".to_string()),
             revision: None,
             dry_run: false,
+
+            branch: None,
         };
 
         assert_eq!(opts_with_trunk.base.as_deref(), Some("trunk()"));
@@ -1015,6 +1049,8 @@ mod tests {
             base: Some("trunk()".to_string()),
             revision: None,
             dry_run: false,
+
+            branch: None,
         };
 
         // When --all is specified, it should work with base revisions
@@ -1034,6 +1070,8 @@ mod tests {
             base: Some("trunk()".to_string()),
             revision: None,
             dry_run: false,
+
+            branch: None,
         };
 
         assert!(opts.all);
@@ -1055,6 +1093,8 @@ mod tests {
             base: None,
             revision: None,
             dry_run: true,
+
+            branch: None,
         };
 
         assert!(opts.dry_run);
