@@ -263,9 +263,8 @@ mod tests {
 
     #[test]
     fn test_build_github_commit_message_title_only() {
-        let sections: MessageSectionsMap = [
-            (MessageSection::Title, "feat: add new feature".to_string()),
-        ].into();
+        let sections: MessageSectionsMap =
+            [(MessageSection::Title, "feat: add new feature".to_string())].into();
         let result = build_github_commit_message(&sections);
         assert_eq!(result, "feat: add new feature\n");
     }
@@ -274,10 +273,17 @@ mod tests {
     fn test_build_github_commit_message_title_and_summary() {
         let sections: MessageSectionsMap = [
             (MessageSection::Title, "feat: add new feature".to_string()),
-            (MessageSection::Summary, "This adds the feature.\n\nIt does X and Y.".to_string()),
-        ].into();
+            (
+                MessageSection::Summary,
+                "This adds the feature.\n\nIt does X and Y.".to_string(),
+            ),
+        ]
+        .into();
         let result = build_github_commit_message(&sections);
-        assert_eq!(result, "feat: add new feature\n\nThis adds the feature.\n\nIt does X and Y.\n");
+        assert_eq!(
+            result,
+            "feat: add new feature\n\nThis adds the feature.\n\nIt does X and Y.\n"
+        );
     }
 
     #[test]
@@ -286,8 +292,12 @@ mod tests {
             (MessageSection::Title, "feat: add new feature".to_string()),
             (MessageSection::Summary, "Body text here.".to_string()),
             (MessageSection::Reviewers, "alice, bob".to_string()),
-            (MessageSection::PullRequest, "https://github.com/org/repo/pull/42".to_string()),
-        ].into();
+            (
+                MessageSection::PullRequest,
+                "https://github.com/org/repo/pull/42".to_string(),
+            ),
+        ]
+        .into();
         let result = build_github_commit_message(&sections);
         assert_eq!(result, "feat: add new feature\n\nBody text here.\n");
     }

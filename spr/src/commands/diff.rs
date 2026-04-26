@@ -85,14 +85,14 @@ pub async fn diff(
         )?;
 
     // Safety: fetch latest trunk and validate parent freshness
-    if !opts.unsafe_mode {
-        if let Err(e) = jj.git_fetch() {
-            return Err(crate::error::Error::new(format!(
-                "Failed to fetch latest trunk: {}. \
-                 Pass --unsafe to skip this check and proceed offline.",
-                e
-            )));
-        }
+    if !opts.unsafe_mode
+        && let Err(e) = jj.git_fetch()
+    {
+        return Err(crate::error::Error::new(format!(
+            "Failed to fetch latest trunk: {}. \
+             Pass --unsafe to skip this check and proceed offline.",
+            e
+        )));
     }
 
     // Get commits to process
@@ -119,10 +119,11 @@ pub async fn diff(
     };
 
     // Staleness check: verify parent is on trunk (skip for stacked/range mode)
-    if !opts.unsafe_mode && !use_range_mode {
-        if let Some(first_commit) = prepared_commits.first() {
-            jj.check_parent_on_trunk(first_commit.parent_oid, config)?;
-        }
+    if !opts.unsafe_mode
+        && !use_range_mode
+        && let Some(first_commit) = prepared_commits.first()
+    {
+        jj.check_parent_on_trunk(first_commit.parent_oid, config)?;
     }
 
     #[allow(clippy::needless_collect)]

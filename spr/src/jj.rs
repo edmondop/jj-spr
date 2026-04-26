@@ -864,7 +864,11 @@ mod tests {
             .current_dir(&repo_path)
             .output()
             .expect("Failed to set bookmark");
-        assert!(output.status.success(), "Failed to set bookmark: {}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "Failed to set bookmark: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
 
         let git_repo = git2::Repository::open(&repo_path).expect("Failed to open git repository");
         let jj = Jujutsu::new(git_repo).expect("Failed to create Jujutsu instance");
