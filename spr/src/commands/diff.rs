@@ -12,7 +12,7 @@ use crate::{
     github::{
         GitHub, PullRequest, PullRequestRequestReviewers, PullRequestState, PullRequestUpdate,
     },
-    message::{MessageSection, validate_commit_message},
+    message::{MessageSection, build_github_commit_message, validate_commit_message},
     output::{output, write_commit_title},
     utils::{parse_name_list, remove_all_parens, run_command},
 };
@@ -630,14 +630,15 @@ async fn diff_impl(
         // Use a placeholder OID — this won't be pushed
         pr_head_oid
     } else {
+        let commit_msg = match github_commit_message.as_ref() {
+            Some(msg) => msg.clone(),
+            None => build_github_commit_message(message).trim_end().to_string(),
+        };
         jj.create_derived_commit(
             local_commit.oid,
             &format!(
                 "{}\n\nCreated using jj-spr {}",
-                github_commit_message
-                    .as_ref()
-                    .map(|s| &s[..])
-                    .unwrap_or_else(|| title),
+                commit_msg,
                 env!("CARGO_PKG_VERSION"),
             ),
             new_head_tree,

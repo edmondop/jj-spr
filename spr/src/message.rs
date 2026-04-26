@@ -161,6 +161,16 @@ pub fn build_github_body(section_texts: &MessageSectionsMap) -> String {
     build_message(section_texts, &[MessageSection::Summary])
 }
 
+/// Build a commit message for the GitHub PR branch commit.
+/// Includes Title and Summary only — excludes Reviewers, ReviewedBy,
+/// PullRequest metadata sections.
+pub fn build_github_commit_message(section_texts: &MessageSectionsMap) -> String {
+    build_message(
+        section_texts,
+        &[MessageSection::Title, MessageSection::Summary],
+    )
+}
+
 pub fn build_github_body_for_merging(section_texts: &MessageSectionsMap) -> String {
     build_message(
         section_texts,
@@ -249,6 +259,37 @@ mod tests {
             ]
             .into()
         );
+    }
+
+    #[test]
+    fn test_build_github_commit_message_title_only() {
+        let sections: MessageSectionsMap = [
+            (MessageSection::Title, "feat: add new feature".to_string()),
+        ].into();
+        let result = build_github_commit_message(&sections);
+        assert_eq!(result, "feat: add new feature\n");
+    }
+
+    #[test]
+    fn test_build_github_commit_message_title_and_summary() {
+        let sections: MessageSectionsMap = [
+            (MessageSection::Title, "feat: add new feature".to_string()),
+            (MessageSection::Summary, "This adds the feature.\n\nIt does X and Y.".to_string()),
+        ].into();
+        let result = build_github_commit_message(&sections);
+        assert_eq!(result, "feat: add new feature\n\nThis adds the feature.\n\nIt does X and Y.\n");
+    }
+
+    #[test]
+    fn test_build_github_commit_message_excludes_metadata() {
+        let sections: MessageSectionsMap = [
+            (MessageSection::Title, "feat: add new feature".to_string()),
+            (MessageSection::Summary, "Body text here.".to_string()),
+            (MessageSection::Reviewers, "alice, bob".to_string()),
+            (MessageSection::PullRequest, "https://github.com/org/repo/pull/42".to_string()),
+        ].into();
+        let result = build_github_commit_message(&sections);
+        assert_eq!(result, "feat: add new feature\n\nBody text here.\n");
     }
 
     #[test]
