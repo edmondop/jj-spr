@@ -61,6 +61,11 @@ pub struct DiffOptions {
     /// Use when working offline or when you know the parent is correct.
     #[clap(long = "unsafe")]
     pub unsafe_mode: bool,
+
+    /// Explicit branch name for the PR (overrides bookmark detection and
+    /// title-based slugification)
+    #[clap(long)]
+    branch: Option<String>,
 }
 
 pub async fn diff(
@@ -433,7 +438,28 @@ async fn diff_impl(
     let pull_request_branch = match &pull_request {
         Some(pr) => pr.head.clone(),
         None => {
-            config.new_github_branch(&config.get_new_branch_name(&jj.get_all_ref_names()?, title))
+            let branch_name = if let Some(ref explicit) = opts.branch {
+                // Explicit --branch flag takes priority
+                explicit.clone()
+            } else {
+                // Try to use a jj bookmark on this change
+                let bookmarks = jj.get_bookmarks_for_change(local_commit.oid)?;
+                match bookmarks.len() {
+                    0 => config.get_new_branch_name(&jj.get_all_ref_names()?, title),
+                    1 => {
+                        let ref_names = jj.get_all_ref_names()?;
+                        config.get_branch_name_from_bookmark(&ref_names, &bookmarks[0])
+                    }
+                    _ => {
+                        return Err(Error::new(format!(
+                            "Change has multiple bookmarks: {}. \
+                             Use --branch to specify which one to use.",
+                            bookmarks.join(", ")
+                        )));
+                    }
+                }
+            };
+            config.new_github_branch(&branch_name)
         }
     };
 
@@ -963,6 +989,7 @@ mod tests {
             revision: None,
             dry_run: false,
             unsafe_mode: false,
+            branch: None,
         };
 
         assert!(!opts.all);
@@ -985,6 +1012,7 @@ mod tests {
             revision: None,
             dry_run: false,
             unsafe_mode: false,
+            branch: None,
         };
 
         assert_eq!(opts.base, Some("main".to_string()));
@@ -1012,6 +1040,7 @@ mod tests {
             revision: None,
             dry_run: false,
             unsafe_mode: false,
+            branch: None,
         };
 
         assert_eq!(opts_with_base.base.as_deref(), Some("main"));
@@ -1027,6 +1056,7 @@ mod tests {
             revision: None,
             dry_run: false,
             unsafe_mode: false,
+            branch: None,
         };
 
         assert_eq!(opts_with_trunk.base.as_deref(), Some("trunk()"));
@@ -1044,6 +1074,7 @@ mod tests {
             revision: None,
             dry_run: false,
             unsafe_mode: false,
+            branch: None,
         };
 
         // When --all is specified, it should work with base revisions
@@ -1064,6 +1095,7 @@ mod tests {
             revision: None,
             dry_run: false,
             unsafe_mode: false,
+            branch: None,
         };
 
         assert!(opts.all);
@@ -1086,6 +1118,7 @@ mod tests {
             revision: None,
             dry_run: true,
             unsafe_mode: false,
+            branch: None,
         };
 
         assert!(opts.dry_run);
