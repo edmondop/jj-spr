@@ -56,6 +56,11 @@ pub struct DiffOptions {
     /// Preview what would happen without pushing or creating PRs
     #[clap(long)]
     pub dry_run: bool,
+
+    /// Skip safety checks (stale parent detection, git fetch).
+    /// Use when working offline or when you know the parent is correct.
+    #[clap(long = "unsafe")]
+    pub unsafe_mode: bool,
 }
 
 pub async fn diff(
@@ -73,6 +78,17 @@ pub async fn diff(
             opts.all,
             opts.base.as_deref(),
         )?;
+
+    // Safety: fetch latest trunk and validate parent freshness
+    if !opts.unsafe_mode {
+        if let Err(e) = jj.git_fetch() {
+            return Err(crate::error::Error::new(format!(
+                "Failed to fetch latest trunk: {}. \
+                 Pass --unsafe to skip this check and proceed offline.",
+                e
+            )));
+        }
+    }
 
     // Get commits to process
     let mut prepared_commits = if use_range_mode {
@@ -96,6 +112,13 @@ pub async fn diff(
         output("👋", "No commits found - nothing to do. Good bye!")?;
         return result;
     };
+
+    // Staleness check: verify parent is on trunk (skip for stacked/range mode)
+    if !opts.unsafe_mode && !use_range_mode {
+        if let Some(first_commit) = prepared_commits.first() {
+            jj.check_parent_on_trunk(first_commit.parent_oid, config)?;
+        }
+    }
 
     #[allow(clippy::needless_collect)]
     let pull_request_tasks: Vec<_> = prepared_commits
@@ -939,6 +962,7 @@ mod tests {
             base: None,
             revision: None,
             dry_run: false,
+            unsafe_mode: false,
         };
 
         assert!(!opts.all);
@@ -960,6 +984,7 @@ mod tests {
             base: Some("main".to_string()),
             revision: None,
             dry_run: false,
+            unsafe_mode: false,
         };
 
         assert_eq!(opts.base, Some("main".to_string()));
@@ -986,6 +1011,7 @@ mod tests {
             base: Some("main".to_string()),
             revision: None,
             dry_run: false,
+            unsafe_mode: false,
         };
 
         assert_eq!(opts_with_base.base.as_deref(), Some("main"));
@@ -1000,6 +1026,7 @@ mod tests {
             base: Some("trunk()".to_string()),
             revision: None,
             dry_run: false,
+            unsafe_mode: false,
         };
 
         assert_eq!(opts_with_trunk.base.as_deref(), Some("trunk()"));
@@ -1016,6 +1043,7 @@ mod tests {
             base: Some("trunk()".to_string()),
             revision: None,
             dry_run: false,
+            unsafe_mode: false,
         };
 
         // When --all is specified, it should work with base revisions
@@ -1035,6 +1063,7 @@ mod tests {
             base: Some("trunk()".to_string()),
             revision: None,
             dry_run: false,
+            unsafe_mode: false,
         };
 
         assert!(opts.all);
@@ -1056,6 +1085,7 @@ mod tests {
             base: None,
             revision: None,
             dry_run: true,
+            unsafe_mode: false,
         };
 
         assert!(opts.dry_run);
