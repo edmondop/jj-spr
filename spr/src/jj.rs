@@ -212,18 +212,18 @@ impl Jujutsu {
         }
     }
 
-    /// Check whether `parent_oid` is an ancestor of the current trunk tip.
-    /// Returns Ok(()) if the parent is on trunk, or an error describing the
-    /// staleness.
+    /// Check whether `parent_oid` is on or descended from the current trunk tip.
+    /// Returns Ok(()) if the parent is based on trunk, or an error describing
+    /// the staleness.
     pub fn check_parent_on_trunk(&self, parent_oid: Oid, config: &Config) -> Result<()> {
         let trunk_tip = self.resolve_revision_to_commit_id("trunk()")?;
 
-        let is_ancestor = self
+        let is_on_or_after_trunk = self
             .git_repo
-            .graph_descendant_of(trunk_tip, parent_oid)
+            .graph_descendant_of(parent_oid, trunk_tip)
             .map_err(|e| Error::new(format!("failed to check ancestry: {}", e)))?;
 
-        if is_ancestor || parent_oid == trunk_tip {
+        if is_on_or_after_trunk || parent_oid == trunk_tip {
             Ok(())
         } else {
             Err(Error::new(format!(
