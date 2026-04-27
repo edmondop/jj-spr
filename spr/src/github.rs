@@ -127,6 +127,20 @@ pub struct PullRequestMergeabilityQuery;
 )]
 pub struct OpenPullRequestBranchesQuery;
 
+pub async fn check_graphql_response(res: reqwest::Response) -> Result<reqwest::Response> {
+    if !res.status().is_success() {
+        let status = res.status();
+        let body = res.text().await.unwrap_or_default();
+        return Err(Error::new(format!(
+            "GitHub API returned {} {}: {}",
+            status.as_u16(),
+            status.canonical_reason().unwrap_or(""),
+            body
+        )));
+    }
+    Ok(res)
+}
+
 impl GitHub {
     pub fn new(config: crate::config::Config, graphql_client: reqwest::Client) -> Self {
         Self {
@@ -170,6 +184,7 @@ impl GitHub {
             .json(&request_body)
             .send()
             .await?;
+        let res = check_graphql_response(res).await?;
         let response_body: Response<pull_request_query::ResponseData> = res.json().await?;
 
         if let Some(errors) = response_body.errors {
@@ -430,6 +445,7 @@ impl GitHub {
             .json(&request_body)
             .send()
             .await?;
+        let res = check_graphql_response(res).await?;
         let response_body: Response<pull_request_mergeability_query::ResponseData> =
             res.json().await?;
 
@@ -483,6 +499,7 @@ impl GitHub {
                 .json(&request_body)
                 .send()
                 .await?;
+            let res = check_graphql_response(res).await?;
             let response_body: Response<open_pull_request_branches_query::ResponseData> =
                 res.json().await?;
 
