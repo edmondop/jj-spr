@@ -7,7 +7,7 @@
 
 use crate::error::Error;
 use crate::error::Result;
-use crate::github::check_graphql_response;
+use crate::github::check_api_response;
 use graphql_client::{GraphQLQuery, Response};
 use reqwest;
 
@@ -34,7 +34,7 @@ pub async fn list(graphql_client: reqwest::Client, config: &crate::config::Confi
         .json(&request_body)
         .send()
         .await?;
-    let res = check_graphql_response(res).await?;
+    let res = check_api_response(res).await?;
     let response_body: Response<search_query::ResponseData> = res.json().await?;
 
     print_pr_info(response_body).ok_or_else(|| Error::new("unexpected error"))

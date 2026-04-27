@@ -5,13 +5,11 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-use graphql_client::{GraphQLQuery, Response};
-use serde::Deserialize;
-
 use crate::{
     error::{Error, Result, ResultExt},
     message::{MessageSection, MessageSectionsMap, build_github_body, parse_message},
 };
+use graphql_client::{GraphQLQuery, Response};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone)]
@@ -127,7 +125,7 @@ pub struct PullRequestMergeabilityQuery;
 )]
 pub struct OpenPullRequestBranchesQuery;
 
-pub async fn check_graphql_response(res: reqwest::Response) -> Result<reqwest::Response> {
+pub async fn check_api_response(res: reqwest::Response) -> Result<reqwest::Response> {
     if !res.status().is_success() {
         let status = res.status();
         let body = res.text().await.unwrap_or_default();
@@ -184,7 +182,7 @@ impl GitHub {
             .json(&request_body)
             .send()
             .await?;
-        let res = check_graphql_response(res).await?;
+        let res = check_api_response(res).await?;
         let response_body: Response<pull_request_query::ResponseData> = res.json().await?;
 
         if let Some(errors) = response_body.errors {
@@ -377,34 +375,42 @@ impl GitHub {
         head_ref_name: String,
         draft: bool,
     ) -> Result<u64> {
-        let number = octocrab::instance()
-            .pulls(self.config.owner.clone(), self.config.repo.clone())
-            .create(
-                message
-                    .get(&MessageSection::Title)
-                    .unwrap_or(&String::new()),
-                head_ref_name,
-                base_ref_name,
-            )
-            .body(build_github_body(message))
-            .draft(Some(draft))
+        let body = serde_json::json!({
+            "title": message.get(&MessageSection::Title).unwrap_or(&String::new()),
+            "head": head_ref_name,
+            "base": base_ref_name,
+            "body": build_github_body(message),
+            "draft": draft,
+        });
+        let res = self
+            .graphql_client
+            .post(format!(
+                "https://api.github.com/repos/{}/{}/pulls",
+                self.config.owner, self.config.repo
+            ))
+            .json(&body)
             .send()
-            .await?
-            .number;
+            .await?;
+        let res = check_api_response(res).await?;
+        let pr: serde_json::Value = res.json().await?;
+        let number = pr["number"]
+            .as_u64()
+            .ok_or_else(|| Error::new("GitHub API did not return a PR number"))?;
 
         Ok(number)
     }
 
     pub async fn update_pull_request(&self, number: u64, updates: PullRequestUpdate) -> Result<()> {
-        octocrab::instance()
-            .patch::<octocrab::models::pulls::PullRequest, _, _>(
-                format!(
-                    "/repos/{}/{}/pulls/{}",
-                    self.config.owner, self.config.repo, number
-                ),
-                Some(&updates),
-            )
+        let res = self
+            .graphql_client
+            .patch(format!(
+                "https://api.github.com/repos/{}/{}/pulls/{}",
+                self.config.owner, self.config.repo, number
+            ))
+            .json(&updates)
+            .send()
             .await?;
+        check_api_response(res).await?;
 
         Ok(())
     }
@@ -414,17 +420,16 @@ impl GitHub {
         number: u64,
         reviewers: PullRequestRequestReviewers,
     ) -> Result<()> {
-        #[derive(Deserialize)]
-        struct Ignore {}
-        let _: Ignore = octocrab::instance()
-            .post(
-                format!(
-                    "/repos/{}/{}/pulls/{}/requested_reviewers",
-                    self.config.owner, self.config.repo, number
-                ),
-                Some(&reviewers),
-            )
+        let res = self
+            .graphql_client
+            .post(format!(
+                "https://api.github.com/repos/{}/{}/pulls/{}/requested_reviewers",
+                self.config.owner, self.config.repo, number
+            ))
+            .json(&reviewers)
+            .send()
             .await?;
+        check_api_response(res).await?;
 
         Ok(())
     }
@@ -445,7 +450,7 @@ impl GitHub {
             .json(&request_body)
             .send()
             .await?;
-        let res = check_graphql_response(res).await?;
+        let res = check_api_response(res).await?;
         let response_body: Response<pull_request_mergeability_query::ResponseData> =
             res.json().await?;
 
@@ -499,7 +504,7 @@ impl GitHub {
                 .json(&request_body)
                 .send()
                 .await?;
-            let res = check_graphql_response(res).await?;
+            let res = check_api_response(res).await?;
             let response_body: Response<open_pull_request_branches_query::ResponseData> =
                 res.json().await?;
 
