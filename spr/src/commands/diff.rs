@@ -300,7 +300,12 @@ async fn diff_impl(
     let message = &mut local_commit.message;
 
     // Check if the local commit is based directly on the master branch.
-    let directly_based_on_master = local_commit.parent_oid == master_base_oid;
+    // We check both the merge-base equality (original logic) AND whether the
+    // parent is anywhere on the trunk line.  The latter catches the case where
+    // the merge-base OID drifts (e.g. after fetch) but the parent is still a
+    // valid trunk commit.
+    let directly_based_on_master =
+        local_commit.parent_oid == master_base_oid || jj.is_on_trunk(local_commit.parent_oid)?;
 
     // Determine the trees the Pull Request branch and the base branch should
     // have when we're done here.

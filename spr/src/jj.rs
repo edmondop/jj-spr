@@ -216,23 +216,39 @@ impl Jujutsu {
     /// Returns Ok(()) if the parent is based on trunk, or an error describing
     /// the staleness.
     pub fn check_parent_on_trunk(&self, parent_oid: Oid, config: &Config) -> Result<()> {
-        let trunk_tip = self.resolve_revision_to_commit_id("trunk()")?;
-
-        let is_on_or_after_trunk = self
-            .git_repo
-            .graph_descendant_of(parent_oid, trunk_tip)
-            .map_err(|e| Error::new(format!("failed to check ancestry: {}", e)))?;
-
-        if is_on_or_after_trunk || parent_oid == trunk_tip {
+        if self.is_on_trunk(parent_oid)? {
             Ok(())
         } else {
+            let trunk_tip = self.resolve_revision_to_commit_id("trunk()")?;
             Err(Error::new(format!(
-                "Change parent is not on {}. \
-                 Rebase with `jj rebase -d 'trunk()'` first, \
+                "Change parent ({:.7}) is not on {} (trunk tip: {:.7}). \
+                 Rebase the target change with \
+                 `jj rebase -s <change> -d 'trunk()'` first \
+                 (note: plain `jj rebase -d 'trunk()'` only rebases @, \
+                 which may not be the change you intend), \
                  or pass --unsafe to skip this check.",
-                config.master_ref.branch_name()
+                parent_oid,
+                config.master_ref.branch_name(),
+                trunk_tip,
             )))
         }
+    }
+
+    /// Check whether a commit is on the trunk line (is an ancestor of, or
+    /// equal to, trunk tip).
+    pub fn is_on_trunk(&self, commit_oid: Oid) -> Result<bool> {
+        let trunk_tip = self.resolve_revision_to_commit_id("trunk()")?;
+
+        if commit_oid == trunk_tip {
+            return Ok(true);
+        }
+
+        // graph_descendant_of(a, b) returns true when a is a descendant of b.
+        // We check whether trunk_tip descends from commit_oid, which means
+        // commit_oid is an ancestor of trunk (i.e. on the trunk line).
+        self.git_repo
+            .graph_descendant_of(trunk_tip, commit_oid)
+            .map_err(|e| Error::new(format!("failed to check ancestry: {}", e)))
     }
 
     pub fn get_prepared_commit_for_revision(
