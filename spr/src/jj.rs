@@ -345,6 +345,68 @@ impl Jujutsu {
         Ok(index)
     }
 
+    /// Cherry-pick a commit onto another, auto-resolving conflicts by keeping
+    /// the cherry-picked commit's version of conflicted files. Returns the
+    /// resulting tree OID.
+    ///
+    /// For non-conflicting files the normal 3-way merge result is used. For
+    /// conflicted entries the blob from the cherry-picked commit's tree wins.
+    pub fn cherrypick_auto_resolve(&self, commit_oid: Oid, onto_oid: Oid) -> Result<Oid> {
+        let mut index = self.cherrypick(commit_oid, onto_oid)?;
+
+        if !index.has_conflicts() {
+            return Ok(index.write_tree_to(&self.git_repo)?);
+        }
+
+        // Resolve conflicts: for each conflicted path, take the version from
+        // the cherry-picked commit's tree (the "theirs" side, stage 3).
+        let conflicts: Vec<_> = index
+            .conflicts()?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+
+        for conflict in &conflicts {
+            // Get the path from whichever conflict stage has it
+            let path = conflict
+                .their
+                .as_ref()
+                .or(conflict.our.as_ref())
+                .or(conflict.ancestor.as_ref())
+                .map(|e| e.path.clone());
+
+            let path = match path {
+                Some(p) if !p.is_empty() => p,
+                _ => continue, // Skip degenerate conflicts with no path
+            };
+
+            // Remove all conflict stages for this path
+            let path_str = std::str::from_utf8(&path).map_err(|e| Error::new(e.to_string()))?;
+            index.remove_path(std::path::Path::new(path_str))?;
+
+            if let Some(theirs) = &conflict.their {
+                // Add the cherry-picked commit's version as a normal (stage 0) entry
+                let resolved = git2::IndexEntry {
+                    ctime: theirs.ctime,
+                    mtime: theirs.mtime,
+                    dev: theirs.dev,
+                    ino: theirs.ino,
+                    mode: theirs.mode,
+                    uid: theirs.uid,
+                    gid: theirs.gid,
+                    file_size: theirs.file_size,
+                    id: theirs.id,
+                    flags: theirs.flags & !0x3000, // Clear stage bits → stage 0
+                    flags_extended: theirs.flags_extended,
+                    path: theirs.path.clone(),
+                };
+                index.add(&resolved)?;
+            }
+            // If theirs is None, the file was deleted by the cherry-picked commit;
+            // removing it from the index is correct.
+        }
+
+        Ok(index.write_tree_to(&self.git_repo)?)
+    }
+
     pub fn write_index(&self, mut index: git2::Index) -> Result<Oid> {
         Ok(index.write_tree_to(&self.git_repo)?)
     }
@@ -842,5 +904,247 @@ mod tests {
         let jj = Jujutsu::new_with_workspace(git_repo, subdir)?;
         assert!(jj.repo_path.join(".jj").exists());
         Ok(())
+    }
+
+    /// Helper: create a git commit using OIDs (no borrows on Repository).
+    fn git_commit_by_oid(
+        repo: &git2::Repository,
+        parent_oid: git2::Oid,
+        message: &str,
+        files: &[(&str, &str)],
+    ) -> git2::Oid {
+        let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+        let parent = repo.find_commit(parent_oid).unwrap();
+        let parent_tree = parent.tree().unwrap();
+
+        // Start from parent's tree and overlay new files
+        let mut builder = repo.treebuilder(Some(&parent_tree)).unwrap();
+        for &(path, content) in files {
+            let blob = repo.blob(content.as_bytes()).unwrap();
+            builder.insert(path, blob, 0o100644).unwrap();
+        }
+        let tree_oid = builder.write().unwrap();
+        let tree = repo.find_tree(tree_oid).unwrap();
+        repo.commit(None, &sig, &sig, message, &tree, &[&parent])
+            .unwrap()
+    }
+
+    /// Setup a diverged repo: returns (master_oid, branch_oid) both parented on head.
+    fn setup_diverged_repo(
+        repo_path: &Path,
+        master_files: &[(&str, &str)],
+        branch_files: &[(&str, &str)],
+    ) -> (git2::Oid, git2::Oid) {
+        let repo = git2::Repository::open(repo_path).unwrap();
+        let head_oid = repo.head().unwrap().peel_to_commit().unwrap().id();
+        let master_oid = git_commit_by_oid(&repo, head_oid, "master change", master_files);
+        let branch_oid = git_commit_by_oid(&repo, head_oid, "branch change", branch_files);
+        (master_oid, branch_oid)
+    }
+
+    #[test]
+    fn test_cherrypick_no_conflict_succeeds() {
+        let (_temp_dir, repo_path) = create_jujutsu_test_repo();
+        create_jujutsu_commit(&repo_path, "Initial", "init");
+
+        let (master_oid, branch_oid) = setup_diverged_repo(
+            &repo_path,
+            &[("file_a.txt", "master content")],
+            &[("file_b.txt", "branch content")],
+        );
+
+        let repo = git2::Repository::open(&repo_path).unwrap();
+        let jj = Jujutsu::new(repo).unwrap();
+        let index = jj.cherrypick(branch_oid, master_oid).unwrap();
+        assert!(
+            !index.has_conflicts(),
+            "should not conflict when modifying different files"
+        );
+    }
+
+    #[test]
+    fn test_cherrypick_with_conflict_detected() {
+        let (_temp_dir, repo_path) = create_jujutsu_test_repo();
+        create_jujutsu_commit(&repo_path, "Initial", "init");
+
+        let (master_oid, branch_oid) = setup_diverged_repo(
+            &repo_path,
+            &[("shared.txt", "master version")],
+            &[("shared.txt", "branch version")],
+        );
+
+        let repo = git2::Repository::open(&repo_path).unwrap();
+        let jj = Jujutsu::new(repo).unwrap();
+        let index = jj.cherrypick(branch_oid, master_oid).unwrap();
+        assert!(
+            index.has_conflicts(),
+            "should conflict when both sides modify the same file"
+        );
+    }
+
+    #[test]
+    fn test_cherrypick_auto_resolve_produces_clean_tree() {
+        let (_temp_dir, repo_path) = create_jujutsu_test_repo();
+        create_jujutsu_commit(&repo_path, "Initial", "init");
+
+        let (master_oid, branch_oid) = setup_diverged_repo(
+            &repo_path,
+            &[("shared.txt", "master version")],
+            &[("shared.txt", "branch version")],
+        );
+
+        let repo = git2::Repository::open(&repo_path).unwrap();
+        let jj = Jujutsu::new(repo).unwrap();
+        let tree_oid = jj
+            .cherrypick_auto_resolve(branch_oid, master_oid)
+            .expect("auto-resolve should succeed");
+
+        let tree = jj.git_repo.find_tree(tree_oid).unwrap();
+        let entry = tree
+            .get_name("shared.txt")
+            .expect("shared.txt should exist in tree");
+        let blob = jj.git_repo.find_blob(entry.id()).unwrap();
+        assert_eq!(
+            std::str::from_utf8(blob.content()).unwrap(),
+            "branch version",
+            "auto-resolve should keep the cherry-picked commit's version"
+        );
+    }
+
+    #[test]
+    fn test_cherrypick_auto_resolve_preserves_non_conflicting_files() {
+        let (_temp_dir, repo_path) = create_jujutsu_test_repo();
+        create_jujutsu_commit(&repo_path, "Initial", "init");
+
+        let (master_oid, branch_oid) = setup_diverged_repo(
+            &repo_path,
+            &[
+                ("shared.txt", "master ver"),
+                ("master_only.txt", "master file"),
+            ],
+            &[
+                ("shared.txt", "branch ver"),
+                ("branch_only.txt", "branch file"),
+            ],
+        );
+
+        let repo = git2::Repository::open(&repo_path).unwrap();
+        let jj = Jujutsu::new(repo).unwrap();
+        let tree_oid = jj.cherrypick_auto_resolve(branch_oid, master_oid).unwrap();
+        let tree = jj.git_repo.find_tree(tree_oid).unwrap();
+
+        let shared = jj
+            .git_repo
+            .find_blob(tree.get_name("shared.txt").unwrap().id())
+            .unwrap();
+        assert_eq!(std::str::from_utf8(shared.content()).unwrap(), "branch ver");
+
+        let master_file = jj
+            .git_repo
+            .find_blob(tree.get_name("master_only.txt").unwrap().id())
+            .unwrap();
+        assert_eq!(
+            std::str::from_utf8(master_file.content()).unwrap(),
+            "master file"
+        );
+
+        let branch_file = jj
+            .git_repo
+            .find_blob(tree.get_name("branch_only.txt").unwrap().id())
+            .unwrap();
+        assert_eq!(
+            std::str::from_utf8(branch_file.content()).unwrap(),
+            "branch file"
+        );
+    }
+
+    #[test]
+    fn test_cherrypick_auto_resolve_delete_vs_modify() {
+        // Branch deletes a file that master modifies.
+        // The auto-resolve should honor the branch's intent (deletion).
+        let (_temp_dir, repo_path) = create_jujutsu_test_repo();
+        create_jujutsu_commit(&repo_path, "Initial", "init");
+
+        // Create a shared ancestor with the file
+        let repo = git2::Repository::open(&repo_path).unwrap();
+        let head_oid = repo.head().unwrap().peel_to_commit().unwrap().id();
+        let ancestor_oid = git_commit_by_oid(
+            &repo,
+            head_oid,
+            "ancestor",
+            &[("will_delete.txt", "original"), ("keep.txt", "kept")],
+        );
+        drop(repo);
+
+        // Master modifies the file
+        let repo = git2::Repository::open(&repo_path).unwrap();
+        let master_oid = git_commit_by_oid(
+            &repo,
+            ancestor_oid,
+            "master modifies",
+            &[("will_delete.txt", "master modified"), ("keep.txt", "kept")],
+        );
+        drop(repo);
+
+        // Branch deletes the file (creates commit without it)
+        let branch_oid = {
+            let repo = git2::Repository::open(&repo_path).unwrap();
+            let ancestor = repo.find_commit(ancestor_oid).unwrap();
+            let sig = git2::Signature::now("Test", "test@test.com").unwrap();
+            let mut builder = repo.treebuilder(None).unwrap();
+            let blob = repo.blob(b"kept").unwrap();
+            builder.insert("keep.txt", blob, 0o100644).unwrap();
+            let tree_oid = builder.write().unwrap();
+            let tree = repo.find_tree(tree_oid).unwrap();
+            repo.commit(None, &sig, &sig, "branch deletes", &tree, &[&ancestor])
+                .unwrap()
+        };
+
+        let repo = git2::Repository::open(&repo_path).unwrap();
+        let jj = Jujutsu::new(repo).unwrap();
+
+        // This should NOT panic with "repo path should not be empty"
+        let result = jj.cherrypick_auto_resolve(branch_oid, master_oid);
+        assert!(
+            result.is_ok(),
+            "auto-resolve should handle delete-vs-modify: {:?}",
+            result.err()
+        );
+
+        // The deleted file should NOT be in the result tree
+        let tree = jj.git_repo.find_tree(result.unwrap()).unwrap();
+        assert!(
+            tree.get_name("will_delete.txt").is_none(),
+            "deleted file should not appear in resolved tree"
+        );
+        assert!(
+            tree.get_name("keep.txt").is_some(),
+            "non-conflicting file should be preserved"
+        );
+    }
+
+    #[test]
+    fn test_cherrypick_auto_resolve_no_conflict_same_as_normal() {
+        let (_temp_dir, repo_path) = create_jujutsu_test_repo();
+        create_jujutsu_commit(&repo_path, "Initial", "init");
+
+        let (master_oid, branch_oid) = setup_diverged_repo(
+            &repo_path,
+            &[("file_a.txt", "aaa")],
+            &[("file_b.txt", "bbb")],
+        );
+
+        let repo = git2::Repository::open(&repo_path).unwrap();
+        let jj = Jujutsu::new(repo).unwrap();
+
+        let normal_index = jj.cherrypick(branch_oid, master_oid).unwrap();
+        assert!(!normal_index.has_conflicts());
+        let normal_tree = jj.write_index(normal_index).unwrap();
+
+        let auto_tree = jj.cherrypick_auto_resolve(branch_oid, master_oid).unwrap();
+        assert_eq!(
+            normal_tree, auto_tree,
+            "no-conflict case should produce identical trees"
+        );
     }
 }

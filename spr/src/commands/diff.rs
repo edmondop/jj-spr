@@ -64,7 +64,7 @@ pub struct DiffOptions {
 }
 
 pub async fn diff(
-    opts: DiffOptions,
+    mut opts: DiffOptions,
     jj: &crate::jj::Jujutsu,
     gh: &mut crate::github::GitHub,
     config: &crate::config::Config,
@@ -78,6 +78,14 @@ pub async fn diff(
             opts.all,
             opts.base.as_deref(),
         )?;
+
+    // In single-commit mode, always cherry-pick onto master. This avoids
+    // creating synthetic base branches that pollute PR diffs and trigger
+    // mass reviewer assignments. Conflicts are auto-resolved by keeping
+    // the commit's version of conflicted files.
+    if !use_range_mode && !opts.cherry_pick {
+        opts.cherry_pick = true;
+    }
 
     // Get commits to process
     let mut prepared_commits = if use_range_mode {
@@ -294,19 +302,9 @@ async fn diff_impl(
 
         (head_tree, base_tree)
     } else {
-        // Cherry-pick the current commit onto master
-        let index = jj.cherrypick(local_commit.oid, master_base_oid)?;
-
-        if index.has_conflicts() {
-            return Err(Error::new(formatdoc!(
-                "This commit cannot be cherry-picked on {master}.",
-                master = config.master_ref.branch_name(),
-            )));
-        }
-
-        // This is the tree we are getting from cherrypicking the local commit
-        // on master.
-        let cherry_pick_tree = jj.write_index(index)?;
+        // Cherry-pick the current commit onto master, auto-resolving any
+        // conflicts by keeping the commit's version of conflicted files.
+        let cherry_pick_tree = jj.cherrypick_auto_resolve(local_commit.oid, master_base_oid)?;
         let master_tree = jj.get_tree_oid_for_commit(master_base_oid)?;
 
         (cherry_pick_tree, master_tree)
@@ -1178,5 +1176,85 @@ mod tests {
         let (base, old) = determine_base_branch(Some(&pr), false, false);
         assert!(base.is_none(), "PR already on master stays on master");
         assert!(old.is_none(), "no synthetic base to clean up");
+    }
+
+    #[test]
+    fn test_single_commit_mode_auto_enables_cherry_pick() {
+        // In single-commit mode (no --all, no range), cherry_pick should be
+        // auto-set to true. This prevents synthetic base branch creation.
+        use crate::revision_utils::parse_revision_and_range;
+
+        let mut opts = DiffOptions {
+            all: false,
+            update_message: false,
+            draft: false,
+            message: None,
+            cherry_pick: false,
+            base: None,
+            revision: Some("@-".to_string()),
+            dry_run: false,
+            branch: None,
+        };
+
+        let (use_range_mode, _, _, _) =
+            parse_revision_and_range(opts.revision.as_deref(), opts.all, opts.base.as_deref())
+                .unwrap();
+
+        // Simulate the auto-enable logic from diff()
+        if !use_range_mode && !opts.cherry_pick {
+            opts.cherry_pick = true;
+        }
+
+        assert!(
+            opts.cherry_pick,
+            "single-commit mode should auto-enable cherry_pick"
+        );
+        assert!(!use_range_mode, "single revision should not be range mode");
+    }
+
+    #[test]
+    fn test_range_mode_does_not_auto_enable_cherry_pick() {
+        use crate::revision_utils::parse_revision_and_range;
+
+        let mut opts = DiffOptions {
+            all: true,
+            update_message: false,
+            draft: false,
+            message: None,
+            cherry_pick: false,
+            base: Some("trunk()".to_string()),
+            revision: None,
+            dry_run: false,
+            branch: None,
+        };
+
+        let (use_range_mode, _, _, _) =
+            parse_revision_and_range(opts.revision.as_deref(), opts.all, opts.base.as_deref())
+                .unwrap();
+
+        if !use_range_mode && !opts.cherry_pick {
+            opts.cherry_pick = true;
+        }
+
+        assert!(
+            !opts.cherry_pick,
+            "range mode should NOT auto-enable cherry_pick"
+        );
+    }
+
+    #[test]
+    fn test_single_commit_cherry_pick_drops_synthetic_base() {
+        // When auto cherry-pick is on (single-commit mode) and the PR has a
+        // synthetic base, determine_base_branch should drop it.
+        let pr = make_test_pr("spr/test/main.parent-feature");
+        let directly_on_master = false; // commit is NOT on master tip
+        let cherry_pick = true; // auto-enabled by single-commit mode
+
+        let (base, old) = determine_base_branch(Some(&pr), directly_on_master, cherry_pick);
+        assert!(
+            base.is_none(),
+            "cherry-pick should drop synthetic base even when not directly on master"
+        );
+        assert!(old.is_some(), "should remember old synthetic for cleanup");
     }
 }
