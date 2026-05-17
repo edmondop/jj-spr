@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - jj-spr now works in workspaces that aren't colocated.
+- The first commit in a pull reuqest now uses the local commit's description.
 
 ## [0.1.0] - 2025-11-15
 
